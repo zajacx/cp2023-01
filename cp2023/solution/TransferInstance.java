@@ -4,12 +4,12 @@ import cp2023.base.ComponentId;
 import cp2023.base.ComponentTransfer;
 import cp2023.base.DeviceId;
 
-public class Transfer implements ComponentTransfer {
+public class TransferInstance implements ComponentTransfer {
     private final ComponentId componentId;
     private final DeviceId sourceDeviceId;
     private final DeviceId destinationDeviceId;
 
-    public Transfer(
+    public TransferInstance(
             ComponentId componentId,
             DeviceId sourceDeviceId,
             DeviceId destinationDeviceId) {

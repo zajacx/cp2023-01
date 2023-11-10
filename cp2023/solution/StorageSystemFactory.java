@@ -41,8 +41,10 @@ public final class StorageSystemFactory {
             Map<DeviceId, Integer> deviceTotalSlots,
             Map<ComponentId, DeviceId> componentPlacement) {
 
-        if(deviceTotalSlots == null || componentPlacement == null) {
-            throw new IllegalArgumentException("Dependencies not defined!");
+        // Handling all possible exceptions before creating new system:
+
+        if (deviceTotalSlots == null || componentPlacement == null) {
+            throw new IllegalArgumentException("Dependencies not defined");
         }
 
         // All devices and components in the system:
@@ -67,7 +69,7 @@ public final class StorageSystemFactory {
 
         for (DeviceId device : devices) {
             if (deviceOccupiedSlots.get(device) > deviceTotalSlots.get(device)) {
-                throw new IllegalArgumentException(device.toString() + " capacity exceeded!");
+                throw new IllegalArgumentException(device.toString() + " capacity exceeded");
             }
         }
 
