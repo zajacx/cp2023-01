@@ -55,7 +55,11 @@ public final class StorageSystemFactory {
 
         for (DeviceId device : devices) {
             if (deviceTotalSlots.get(device) != null) {
-                deviceOccupiedSlots.put(device, 0);
+                if (deviceTotalSlots.get(device) > 0) {
+                    deviceOccupiedSlots.put(device, 0);
+                } else {
+                    throw new IllegalArgumentException("Device with negative capacity");
+                }
             } else {
                 throw new IllegalArgumentException("Device with non-defined capacity");
             }

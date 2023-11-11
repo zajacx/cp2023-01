@@ -4,7 +4,7 @@ import cp2023.base.ComponentId;
 import cp2023.base.ComponentTransfer;
 import cp2023.base.DeviceId;
 import cp2023.base.StorageSystem;
-import cp2023.exceptions.TransferException;
+import cp2023.exceptions.*;
 
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
@@ -22,11 +22,18 @@ public class StorageSystemInstance implements StorageSystem {
     // Map of devices and their contents placed in distinguishable slots:
     private final Map<DeviceId, ComponentId[]> deviceContents = new ConcurrentHashMap<>();
 
-    // Map of components and their current transfers (initially nulled):
+    // Map of components and their current transfers
+    // (currentTransfer.values() is a set of all current transfers):
     private final Map<ComponentId, ComponentTransfer> currentTransfer = new ConcurrentHashMap<>();
+
+    // Semaphores for each component:
+    private final Map<ComponentId, Semaphore> semaphores = new ConcurrentHashMap<>();
 
     // Mutex:
     private final Semaphore mutex = new Semaphore(1);
+
+
+
 
     public StorageSystemInstance(
             List<DeviceId> devices,
@@ -43,10 +50,61 @@ public class StorageSystemInstance implements StorageSystem {
 
     // ----------------------------- Public methods ------------------------------
 
+    /**
+     * Algorytm realizacji transferu:
+     * jeśli urządzenie docelowe == null : zacznij od razu
+     * wpp:
+     * jeśli na urządzeniu docelowym istnieje miejsce, które nie zostało przez
+     * nikogo zarezerwowane : zacznij transfer
+     * wpp:
+     * jeśli z urządzenia docelowego coś będzie transferowane i transfer
+     * jest zatwierdzony (faza prepare zakończona) : zacznij transfer
+     * wpp:
+     * sprawdź, czy w systemie istnieje cykl
+     * -> rozwiąż cykl zasuwką (?)
+     */
     public void execute(ComponentTransfer transfer) throws TransferException {
-        // Tutaj wszystkie wątki
-    }
+        ComponentId componentId = transfer.getComponentId();
+        DeviceId sourceDeviceId = transfer.getSourceDeviceId();
+        DeviceId destinationDeviceId = transfer.getDestinationDeviceId();
 
+        try {
+            mutex.acquire();
+        } catch (InterruptedException e) {
+            throw new RuntimeException("panic: unexpected thread interruption");
+        }
+
+        // EXCEPTIONS:
+        if (sourceDeviceId == null && destinationDeviceId == null) {
+            throw new IllegalTransferType(componentId);
+        }
+        if (sourceDeviceId != null && !devices.contains(sourceDeviceId)) {
+            throw new DeviceDoesNotExist(sourceDeviceId);
+        }
+        if (destinationDeviceId != null && !devices.contains(destinationDeviceId)) {
+            throw new DeviceDoesNotExist(destinationDeviceId);
+        }
+        if (sourceDeviceId == null) {
+            // (destinationDeviceId != null) is always true here
+            for (ComponentId component : components) {
+                if (componentId.equals(component)) {
+                    throw new ComponentAlreadyExists(component, componentPlacement.get(component));
+                }
+            }
+        }
+        if (sourceDeviceId != null && sourceDeviceId.equals(destinationDeviceId)) {
+            throw new ComponentDoesNotNeedTransfer(componentId, sourceDeviceId);
+        }
+        if (currentTransfer.get(componentId) != null) {
+            throw new ComponentIsBeingOperatedOn(componentId);
+        }
+        if (sourceDeviceId != null && invalidComponent(componentId, sourceDeviceId)) {
+            throw new ComponentDoesNotExist(componentId, sourceDeviceId);
+        }
+
+        mutex.release();
+
+    }
 
 
     // ----------------------------- Private methods -----------------------------
@@ -69,6 +127,15 @@ public class StorageSystemInstance implements StorageSystem {
             list.toArray(slots);
             deviceContents.put(deviceId, slots);
         }
+    }
+
+    private boolean invalidComponent(ComponentId componentId, DeviceId sourceDeviceId) {
+        for (ComponentId component : components) {
+            if (componentId.equals(component) && sourceDeviceId != componentPlacement.get(component)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     // others...
