@@ -33,8 +33,6 @@ public class StorageSystemInstance implements StorageSystem {
     private final Semaphore mutex = new Semaphore(1);
 
 
-
-
     public StorageSystemInstance(
             List<DeviceId> devices,
             List<ComponentId> components,
@@ -64,9 +62,6 @@ public class StorageSystemInstance implements StorageSystem {
      * -> rozwiąż cykl zasuwką (?)
      */
     public void execute(ComponentTransfer transfer) throws TransferException {
-        ComponentId componentId = transfer.getComponentId();
-        DeviceId sourceDeviceId = transfer.getSourceDeviceId();
-        DeviceId destinationDeviceId = transfer.getDestinationDeviceId();
 
         try {
             mutex.acquire();
@@ -74,35 +69,14 @@ public class StorageSystemInstance implements StorageSystem {
             throw new RuntimeException("panic: unexpected thread interruption");
         }
 
-        // EXCEPTIONS:
-        if (sourceDeviceId == null && destinationDeviceId == null) {
-            throw new IllegalTransferType(componentId);
-        }
-        if (sourceDeviceId != null && !devices.contains(sourceDeviceId)) {
-            throw new DeviceDoesNotExist(sourceDeviceId);
-        }
-        if (destinationDeviceId != null && !devices.contains(destinationDeviceId)) {
-            throw new DeviceDoesNotExist(destinationDeviceId);
-        }
-        if (sourceDeviceId == null) {
-            // (destinationDeviceId != null) is always true here
-            for (ComponentId component : components) {
-                if (componentId.equals(component)) {
-                    throw new ComponentAlreadyExists(component, componentPlacement.get(component));
-                }
-            }
-        }
-        if (sourceDeviceId != null && sourceDeviceId.equals(destinationDeviceId)) {
-            throw new ComponentDoesNotNeedTransfer(componentId, sourceDeviceId);
-        }
-        if (currentTransfer.get(componentId) != null) {
-            throw new ComponentIsBeingOperatedOn(componentId);
-        }
-        if (sourceDeviceId != null && invalidComponent(componentId, sourceDeviceId)) {
-            throw new ComponentDoesNotExist(componentId, sourceDeviceId);
-        }
-
+        handleExceptions(transfer);
         mutex.release();
+
+        ComponentId componentId = transfer.getComponentId();
+        DeviceId sourceDeviceId = transfer.getSourceDeviceId();
+        DeviceId destinationDeviceId = transfer.getDestinationDeviceId();
+
+
 
     }
 
@@ -126,6 +100,40 @@ public class StorageSystemInstance implements StorageSystem {
             List<ComponentId> list = help.get(deviceId);
             list.toArray(slots);
             deviceContents.put(deviceId, slots);
+        }
+    }
+
+    private void handleExceptions(ComponentTransfer transfer) throws TransferException {
+        ComponentId componentId = transfer.getComponentId();
+        DeviceId sourceDeviceId = transfer.getSourceDeviceId();
+        DeviceId destinationDeviceId = transfer.getDestinationDeviceId();
+        // Real-time exception:
+        if (currentTransfer.get(componentId) != null) {
+            throw new ComponentIsBeingOperatedOn(componentId);
+        }
+        // Parameters-connected exceptions:
+        if (sourceDeviceId == null && destinationDeviceId == null) {
+            throw new IllegalTransferType(componentId);
+        }
+        if (sourceDeviceId != null && !devices.contains(sourceDeviceId)) {
+            throw new DeviceDoesNotExist(sourceDeviceId);
+        }
+        if (destinationDeviceId != null && !devices.contains(destinationDeviceId)) {
+            throw new DeviceDoesNotExist(destinationDeviceId);
+        }
+        if (sourceDeviceId != null && sourceDeviceId.equals(destinationDeviceId)) {
+            throw new ComponentDoesNotNeedTransfer(componentId, sourceDeviceId);
+        }
+        if (sourceDeviceId != null && invalidComponent(componentId, sourceDeviceId)) {
+            throw new ComponentDoesNotExist(componentId, sourceDeviceId);
+        }
+        if (sourceDeviceId == null) {
+            // (destinationDeviceId != null) is always true here
+            for (ComponentId component : components) {
+                if (componentId.equals(component)) {
+                    throw new ComponentAlreadyExists(component, componentPlacement.get(component));
+                }
+            }
         }
     }
 
