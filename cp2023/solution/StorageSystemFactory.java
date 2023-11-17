@@ -8,34 +8,15 @@
 package cp2023.solution;
 
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 import cp2023.base.ComponentId;
 import cp2023.base.DeviceId;
 import cp2023.base.StorageSystem;
 
-/*
- * Solution - pakiet na rozwiązanie.
- * Nie tworzyć podpakietów!
- * Implementacja nie może tworzyć wątków.
- */
-
 public final class StorageSystemFactory {
-
-    /*
-     * Instancjonowanie implementacji systemu.
-     * Implementacja nie może tworzyć wątków ani wypisywać niczego na wyjścia System.out i System.err.
-     * Wiele obiektów systemu powinno być w stanie działać razem.
-     * (trzeba kontrolować czy używane urządzenia są w wielu systemach?)
-     *
-     *
-     * Jeśli konfiguracja systemu dostarczona jako argumenty tej
-     * metody jest niepoprawna (np. jakiś komponent jest przypisany do urządzenia bez podanej pojemności
-     * lub liczba komponentów przypisanych do jakiegoś urządzenia przekracza jego pojemność), to metoda
-     * powinna podnieść wyjątek java.lang.IllegalArgumentException z odpowiednim komunikatem tekstowym.
-     */
 
     public static StorageSystem newSystem(
             Map<DeviceId, Integer> deviceTotalSlots,
@@ -51,12 +32,12 @@ public final class StorageSystemFactory {
         List<DeviceId> devices = new ArrayList<>(deviceTotalSlots.keySet());
         List<ComponentId> components = new ArrayList<>(componentPlacement.keySet());
 
-        Map<DeviceId, Integer> deviceOccupiedSlots = new HashMap<>(devices.size());
+        Map<DeviceId, Integer> deviceFreeSlots = new ConcurrentHashMap<>();
 
         for (DeviceId device : devices) {
             if (deviceTotalSlots.get(device) != null) {
                 if (deviceTotalSlots.get(device) > 0) {
-                    deviceOccupiedSlots.put(device, 0);
+                    deviceFreeSlots.put(device, deviceTotalSlots.get(device));
                 } else {
                     throw new IllegalArgumentException("Device with negative capacity");
                 }
@@ -67,17 +48,22 @@ public final class StorageSystemFactory {
 
         for (ComponentId component : components) {
             DeviceId deviceId = componentPlacement.get(component);
-            Integer occupiedSlots = deviceOccupiedSlots.get(deviceId);
-            deviceOccupiedSlots.put(deviceId, occupiedSlots + 1);
+            Integer freeSlots = deviceFreeSlots.get(deviceId);
+            deviceFreeSlots.put(deviceId, freeSlots - 1);
         }
 
         for (DeviceId device : devices) {
-            if (deviceOccupiedSlots.get(device) > deviceTotalSlots.get(device)) {
+            if (deviceFreeSlots.get(device) < 0) {
                 throw new IllegalArgumentException(device.toString() + " capacity exceeded");
             }
         }
 
-        return new StorageSystemInstance(devices, components, deviceTotalSlots, componentPlacement);
+        return new StorageSystemInstance(
+                devices, // zobaczyć czy potrzebne
+                components, // zobaczyć czy potrzebne
+                deviceTotalSlots, // dane
+                deviceFreeSlots, // na pewno potrzebne
+                componentPlacement); // dane
     }
 
 }

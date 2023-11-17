@@ -15,19 +15,16 @@ public class StorageSystemInstance implements StorageSystem {
     private final List<DeviceId> devices;
     private final List<ComponentId> components;
     private final Map<DeviceId, Integer> deviceTotalSlots;
+    private final Map<DeviceId, Integer> deviceFreeSlots;
     private final Map<ComponentId, DeviceId> componentPlacement;
 
     // Additional structures and variables:
 
-    // Map of devices and their contents placed in distinguishable slots:
-    private final Map<DeviceId, ComponentId[]> deviceContents = new ConcurrentHashMap<>();
+    // Map of components and their current transfers:
+    private final Map<ComponentId, WrappedTransfer> currentTransfers = new ConcurrentHashMap<>();
 
-    // Map of components and their current transfers
-    // (currentTransfer.values() is a set of all current transfers):
-    private final Map<ComponentId, ComponentTransfer> currentTransfer = new ConcurrentHashMap<>();
-
-    // Semaphores for each component:
-    private final Map<ComponentId, Semaphore> semaphores = new ConcurrentHashMap<>();
+    // Map of devices and their queues:
+    private final Map<DeviceId, Queue<WrappedTransfer>> queues = new ConcurrentHashMap<>();
 
     // Mutex:
     private final Semaphore mutex = new Semaphore(1);
@@ -37,13 +34,15 @@ public class StorageSystemInstance implements StorageSystem {
             List<DeviceId> devices,
             List<ComponentId> components,
             Map<DeviceId, Integer> deviceTotalSlots,
+            Map<DeviceId, Integer> deviceFreeSlots,
             Map<ComponentId, DeviceId> componentPlacement) {
         this.devices = devices;
         this.components = components;
         this.deviceTotalSlots = deviceTotalSlots;
+        this.deviceFreeSlots = deviceFreeSlots;
         this.componentPlacement = componentPlacement;
         // Additional structures:
-        initializeContents(deviceContents);
+        initializeQueues();
     }
 
     // ----------------------------- Public methods ------------------------------
@@ -63,6 +62,10 @@ public class StorageSystemInstance implements StorageSystem {
      */
     public void execute(ComponentTransfer transfer) throws TransferException {
 
+        ComponentId componentId = transfer.getComponentId();
+        DeviceId sourceDeviceId = transfer.getSourceDeviceId();
+        DeviceId destinationDeviceId = transfer.getDestinationDeviceId();
+
         try {
             mutex.acquire();
         } catch (InterruptedException e) {
@@ -70,45 +73,53 @@ public class StorageSystemInstance implements StorageSystem {
         }
 
         handleExceptions(transfer);
+        WrappedTransfer wrappedTransfer = new WrappedTransfer(transfer);
+        currentTransfers.put(componentId, wrappedTransfer);
+
         mutex.release();
 
-        ComponentId componentId = transfer.getComponentId();
-        DeviceId sourceDeviceId = transfer.getSourceDeviceId();
-        DeviceId destinationDeviceId = transfer.getDestinationDeviceId();
+        // TRANSFER:
+
+        if (destinationDeviceId == null) {
+            transfer.prepare();
+            transfer.perform();
+        } else {
+            // następuje dodawanie lub przenoszenie
+            // P(mutex);
+            try {
+                mutex.acquire();
+            } catch (InterruptedException e) {
+                throw new RuntimeException("panic: unexpected thread interruption");
+            }
+
+            if (deviceFreeSlots.get(destinationDeviceId) > 0) {
+                // Są wolne miejsca:
+                Integer sourceFreeSlots = deviceFreeSlots.get(sourceDeviceId);
+                deviceFreeSlots.put(sourceDeviceId, sourceFreeSlots + 1);
+                Integer destinationFreeSlots = deviceFreeSlots.get(destinationDeviceId);
+                deviceFreeSlots.put(destinationDeviceId, destinationFreeSlots - 1);
+                componentPlacement.put(componentId, destinationDeviceId);
+                currentTransfers.remove(componentId);
+                mutex.release();
+            } else {
+                // Nie ma wolnych miejsc - włączamy oczekiwanie:
+
+            }
 
 
+        }
 
     }
 
 
     // ----------------------------- Private methods -----------------------------
 
-    private void initializeContents(Map<DeviceId, ComponentId[]> deviceContents) {
-        Map<DeviceId, List<ComponentId>> help = new HashMap<>();
-
-        for (DeviceId deviceId : devices) {
-            help.put(deviceId, new LinkedList<>());
-        }
-        for (ComponentId componentId : components) {
-            DeviceId destination = componentPlacement.get(componentId);
-            List<ComponentId> list = help.get(destination);
-            list.add(componentId);
-        }
-        for (DeviceId deviceId : devices) {
-            Integer capacity = deviceTotalSlots.get(deviceId);
-            ComponentId[] slots = new ComponentId[capacity];
-            List<ComponentId> list = help.get(deviceId);
-            list.toArray(slots);
-            deviceContents.put(deviceId, slots);
-        }
-    }
-
     private void handleExceptions(ComponentTransfer transfer) throws TransferException {
         ComponentId componentId = transfer.getComponentId();
         DeviceId sourceDeviceId = transfer.getSourceDeviceId();
         DeviceId destinationDeviceId = transfer.getDestinationDeviceId();
         // Real-time exception:
-        if (currentTransfer.get(componentId) != null) {
+        if (currentTransfers.get(componentId) != null) {
             throw new ComponentIsBeingOperatedOn(componentId);
         }
         // Parameters-connected exceptions:
@@ -144,6 +155,12 @@ public class StorageSystemInstance implements StorageSystem {
             }
         }
         return false;
+    }
+
+    private void initializeQueues() {
+        for (DeviceId device : devices) {
+            queues.put(device, new LinkedList<>());
+        }
     }
 
     // others...
