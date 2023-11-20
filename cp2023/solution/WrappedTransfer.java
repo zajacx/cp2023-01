@@ -6,14 +6,14 @@ import java.util.concurrent.Semaphore;
 
 public class WrappedTransfer {
     private final ComponentTransfer transfer;
-    private final Semaphore semaphore = new Semaphore(1);
+    private final Semaphore semaphore = new Semaphore(0);
     private WrappedTransfer transferToWakeUp;
 
     public WrappedTransfer(ComponentTransfer transfer) {
         this.transfer = transfer;
     }
 
-    // --------------- Getters & setters ---------------
+    // ----------------- Getters & setters -----------------
 
     public Semaphore getSemaphore() {
         return semaphore;
@@ -31,7 +31,7 @@ public class WrappedTransfer {
         this.transferToWakeUp = other;
     }
 
-    // --------------- Semaphore operations ---------------
+    // ---------------- Semaphore operations ----------------
 
     public void goToSleep() {
         try {
@@ -39,10 +39,6 @@ public class WrappedTransfer {
         } catch (InterruptedException e) {
             throw new RuntimeException("panic: unexpected thread interruption");
         }
-    }
-
-    public void wakeUp() {
-        semaphore.release();
     }
 
     public void wakeTheOtherUp() {

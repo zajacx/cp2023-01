@@ -12,8 +12,11 @@ import java.util.concurrent.Semaphore;
 
 public class StorageSystemInstance implements StorageSystem {
 
+    // Collections created mainly to handle exceptions:
     private final List<DeviceId> devices;
     private final List<ComponentId> components;
+
+    // System status data:
     private final Map<DeviceId, Integer> deviceTotalSlots;
     private final Map<DeviceId, Integer> deviceFreeSlots;
     private final Map<ComponentId, DeviceId> componentPlacement;
@@ -22,6 +25,9 @@ public class StorageSystemInstance implements StorageSystem {
 
     // Map of components and their current transfers:
     private final Map<ComponentId, WrappedTransfer> currentTransfers = new ConcurrentHashMap<>();
+
+    // If a transfer is waiting, it's here:
+    private final Map<ComponentId, WrappedTransfer> waitingTransfers = new ConcurrentHashMap<>();
 
     // Map of devices and their queues:
     private final Map<DeviceId, Queue<WrappedTransfer>> queues = new ConcurrentHashMap<>();
@@ -47,19 +53,6 @@ public class StorageSystemInstance implements StorageSystem {
 
     // ----------------------------- Public methods ------------------------------
 
-    /**
-     * Algorytm realizacji transferu:
-     * jeśli urządzenie docelowe == null : zacznij od razu
-     * wpp:
-     * jeśli na urządzeniu docelowym istnieje miejsce, które nie zostało przez
-     * nikogo zarezerwowane : zacznij transfer
-     * wpp:
-     * jeśli z urządzenia docelowego coś będzie transferowane i transfer
-     * jest zatwierdzony (faza prepare zakończona) : zacznij transfer
-     * wpp:
-     * sprawdź, czy w systemie istnieje cykl
-     * -> rozwiąż cykl zasuwką (?)
-     */
     public void execute(ComponentTransfer transfer) throws TransferException {
 
         ComponentId componentId = transfer.getComponentId();
@@ -81,28 +74,100 @@ public class StorageSystemInstance implements StorageSystem {
         // TRANSFER:
 
         if (destinationDeviceId == null) {
-            transfer.prepare();
-            transfer.perform();
-        } else {
-            // następuje dodawanie lub przenoszenie
-            // P(mutex);
             try {
                 mutex.acquire();
             } catch (InterruptedException e) {
                 throw new RuntimeException("panic: unexpected thread interruption");
             }
-
+            Integer sourceFreeSlots = deviceFreeSlots.get(sourceDeviceId);
+            deviceFreeSlots.put(sourceDeviceId, sourceFreeSlots + 1);
+            componentPlacement.remove(componentId);
+            currentTransfers.remove(componentId);
+            // tu gdzieś wywołać prepare i perform
+            mutex.release();
+        } else {
+            // Następuje dodawanie lub przenoszenie
+            try {
+                mutex.acquire();
+            } catch (InterruptedException e) {
+                throw new RuntimeException("panic: unexpected thread interruption");
+            }
             if (deviceFreeSlots.get(destinationDeviceId) > 0) {
-                // Są wolne miejsca:
+                // SĄ WOLNE MIEJSCA:
                 Integer sourceFreeSlots = deviceFreeSlots.get(sourceDeviceId);
                 deviceFreeSlots.put(sourceDeviceId, sourceFreeSlots + 1);
                 Integer destinationFreeSlots = deviceFreeSlots.get(destinationDeviceId);
                 deviceFreeSlots.put(destinationDeviceId, destinationFreeSlots - 1);
                 componentPlacement.put(componentId, destinationDeviceId);
                 currentTransfers.remove(componentId);
+                // tu gdzieś wywołać prepare i perform
                 mutex.release();
             } else {
-                // Nie ma wolnych miejsc - włączamy oczekiwanie:
+                // NIE MA WOLNYCH MIEJSC:
+                // Przechodzimy po wszystkich oczekujących transferach, bo być może
+                // ktoś wisi na swoim semaforze, a będzie za chwilę zwalniał miejsce:
+                boolean foundQuittingComponentImmediately = false;
+                for (WrappedTransfer wrapper : waitingTransfers.values()) {
+                    if (wrapper.getTransfer().getSourceDeviceId() == destinationDeviceId &&
+                            wrapper.getTransferToWakeUp() == null &&
+                            !wrapper.equals(wrappedTransfer)) {
+                        // Znaleźliśmy wychodzący transfer, który jeszcze nie ma następcy:
+                        foundQuittingComponentImmediately = true;
+                        wrapper.setTransferToWakeUp(wrappedTransfer);
+                        break;
+                    }
+                }
+                // Jeśli "siłowo" znaleźliśmy miejsce dla transferu (przez przeszukiwanie)
+                // od razu szukamy dla niego następcy w kolejce urządzenia i tego następcę
+                // budzimy, bo transfer, za który wchodzimy, zaraz się wykona:
+                if (foundQuittingComponentImmediately) {
+                    waitingTransfers.put(componentId, wrappedTransfer);
+                    Queue<WrappedTransfer> sourceDeviceQueue = queues.get(sourceDeviceId);
+                    if (sourceDeviceQueue.peek() != null) {
+                        wrappedTransfer.setTransferToWakeUp(sourceDeviceQueue.poll());
+                        wrappedTransfer.wakeTheOtherUp();
+                    }
+                    mutex.release();
+                    wrappedTransfer.goToSleep();
+                    // Jeżeli transfer jest budzony, to znaczy, że jego poprzednik na
+                    // docelowym urządzeniu już się przenosi:
+                    // Przenoszenie:
+                    // TODO: kawałki kodu na przenoszenie (poza ifem?)
+                }
+                else {
+                    // Transfer dołącza do kolejki oczekująćych na dane urządzenie:
+                    Queue<WrappedTransfer> destinationDeviceQueue = queues.get(destinationDeviceId);
+                    destinationDeviceQueue.add(wrappedTransfer);
+                    waitingTransfers.put(componentId, wrappedTransfer);
+                    mutex.release();
+                    wrappedTransfer.goToSleep();
+                    // Jeżeli transfer jest budzony, to znaczy, że ktoś dodał go jako
+                    // swojego następcę, więc teraz transfer musi zrobić to samo:
+                    try {
+                        mutex.acquire();
+                    } catch (InterruptedException e) {
+                        throw new RuntimeException("panic: unexpected thread interruption");
+                    }
+                    Queue<WrappedTransfer> sourceDeviceQueue = queues.get(sourceDeviceId);
+                    if (sourceDeviceQueue.peek() != null) {
+                        wrappedTransfer.setTransferToWakeUp(sourceDeviceQueue.poll());
+                        wrappedTransfer.wakeTheOtherUp();
+                    }
+                    // Oczekiwanie na przenoszenie:
+                    mutex.release();
+                    wrappedTransfer.goToSleep();
+                    // Budzenie po raz drugi - przenoszenie:
+                    // TODO: kawałki kodu na przenoszenie (poza ifem?)
+                }
+
+                // Przenoszenie:
+                try {
+                    mutex.acquire();
+                } catch (InterruptedException e) {
+                    throw new RuntimeException("panic: unexpected thread interruption");
+                }
+
+                // PERFORM
 
             }
 
