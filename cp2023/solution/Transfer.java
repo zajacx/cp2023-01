@@ -34,15 +34,11 @@ public class Transfer implements ComponentTransfer {
     }
 
     public void prepare() {
-        // if(docelowe != null) {
-        //   dodaj do kolejki na urządzeniu docelowym
-        // }
+
     }
 
     public void perform() {
-        // P(mutex);
-        // zmień pozycję elementu w componentPlacement;
-        // V(mutex);
+
     }
 
 }

@@ -17,7 +17,7 @@ public class StorageSystemInstance implements StorageSystem {
     private final List<ComponentId> components;
 
     // System status data:
-    private final Map<DeviceId, Integer> deviceTotalSlots;
+    private final Map<DeviceId, Integer> deviceTotalSlots; // porządnie rozważyć sens tego XD
     private final Map<DeviceId, Integer> deviceFreeSlots;
     private final Map<ComponentId, DeviceId> componentPlacement;
 
@@ -69,38 +69,50 @@ public class StorageSystemInstance implements StorageSystem {
         WrappedTransfer wrappedTransfer = new WrappedTransfer(transfer);
         currentTransfers.put(componentId, wrappedTransfer);
 
-        mutex.release();
-
         // TRANSFER:
 
+        // USUWANIE:
         if (destinationDeviceId == null) {
-            try {
-                mutex.acquire();
-            } catch (InterruptedException e) {
-                throw new RuntimeException("panic: unexpected thread interruption");
+            transfer.prepare();
+            Queue<WrappedTransfer> sourceDeviceQueue = queues.get(sourceDeviceId);
+            if (sourceDeviceQueue.peek() != null) {
+                wrappedTransfer.setTransferToWakeUp(sourceDeviceQueue.poll());
+                System.out.println("Transfer " + componentId.toString() + " dodał " + wrappedTransfer.getTransferToWakeUp().getTransfer().getComponentId().toString() +
+                        " jako swojego następcę");
+                wrappedTransfer.wakeTheOtherUp();
+                System.out.println("Obudzono " + wrappedTransfer.getTransferToWakeUp().getTransfer().getComponentId().toString());
             }
             Integer sourceFreeSlots = deviceFreeSlots.get(sourceDeviceId);
             deviceFreeSlots.put(sourceDeviceId, sourceFreeSlots + 1);
             componentPlacement.remove(componentId);
             currentTransfers.remove(componentId);
-            // tu gdzieś wywołać prepare i perform
+            if (wrappedTransfer.getTransferToWakeUp() != null) {
+                wrappedTransfer.wakeTheOtherUp();
+            }
+            transfer.perform();
             mutex.release();
         } else {
-            // Następuje dodawanie lub przenoszenie
-            try {
-                mutex.acquire();
-            } catch (InterruptedException e) {
-                throw new RuntimeException("panic: unexpected thread interruption");
-            }
+            // DODAWANIE LUB PRZENOSZENIE:
             if (deviceFreeSlots.get(destinationDeviceId) > 0) {
                 // SĄ WOLNE MIEJSCA:
-                Integer sourceFreeSlots = deviceFreeSlots.get(sourceDeviceId);
-                deviceFreeSlots.put(sourceDeviceId, sourceFreeSlots + 1);
+                transfer.prepare();
+                if (sourceDeviceId != null) {
+                    Queue<WrappedTransfer> sourceDeviceQueue = queues.get(sourceDeviceId);
+                    if (sourceDeviceQueue.peek() != null) {
+                        wrappedTransfer.setTransferToWakeUp(sourceDeviceQueue.poll());
+                        wrappedTransfer.wakeTheOtherUp();
+                    }
+                    Integer sourceFreeSlots = deviceFreeSlots.get(sourceDeviceId);
+                    deviceFreeSlots.put(sourceDeviceId, sourceFreeSlots + 1);
+                }
                 Integer destinationFreeSlots = deviceFreeSlots.get(destinationDeviceId);
                 deviceFreeSlots.put(destinationDeviceId, destinationFreeSlots - 1);
                 componentPlacement.put(componentId, destinationDeviceId);
                 currentTransfers.remove(componentId);
-                // tu gdzieś wywołać prepare i perform
+                if (wrappedTransfer.getTransferToWakeUp() != null) {
+                    wrappedTransfer.wakeTheOtherUp();
+                }
+                transfer.perform();
                 mutex.release();
             } else {
                 // NIE MA WOLNYCH MIEJSC:
@@ -114,6 +126,8 @@ public class StorageSystemInstance implements StorageSystem {
                         // Znaleźliśmy wychodzący transfer, który jeszcze nie ma następcy:
                         foundQuittingComponentImmediately = true;
                         wrapper.setTransferToWakeUp(wrappedTransfer);
+                        System.out.println("Znaleziono od razu miejsce dla " + componentId.toString() + " na urządzeniu "
+                                + destinationDeviceId.toString() + " w miejsce " + wrapper.getTransfer().getComponentId().toString());
                         break;
                     }
                 }
@@ -121,59 +135,72 @@ public class StorageSystemInstance implements StorageSystem {
                 // od razu szukamy dla niego następcy w kolejce urządzenia i tego następcę
                 // budzimy, bo transfer, za który wchodzimy, zaraz się wykona:
                 if (foundQuittingComponentImmediately) {
+                    transfer.prepare();
                     waitingTransfers.put(componentId, wrappedTransfer);
-                    Queue<WrappedTransfer> sourceDeviceQueue = queues.get(sourceDeviceId);
-                    if (sourceDeviceQueue.peek() != null) {
-                        wrappedTransfer.setTransferToWakeUp(sourceDeviceQueue.poll());
-                        wrappedTransfer.wakeTheOtherUp();
+                    if (sourceDeviceId != null) {
+                        Queue<WrappedTransfer> sourceDeviceQueue = queues.get(sourceDeviceId);
+                        if (sourceDeviceQueue.peek() != null) {
+                            wrappedTransfer.setTransferToWakeUp(sourceDeviceQueue.poll());
+                            wrappedTransfer.wakeTheOtherUp();
+                        }
                     }
                     mutex.release();
                     wrappedTransfer.goToSleep();
-                    // Jeżeli transfer jest budzony, to znaczy, że jego poprzednik na
-                    // docelowym urządzeniu już się przenosi:
-                    // Przenoszenie:
-                    // TODO: kawałki kodu na przenoszenie (poza ifem?)
                 }
                 else {
                     // Transfer dołącza do kolejki oczekująćych na dane urządzenie:
                     Queue<WrappedTransfer> destinationDeviceQueue = queues.get(destinationDeviceId);
+                    System.out.println("Dodano " + componentId.toString() + " do kolejki na urządzeniu " + destinationDeviceId.toString());
                     destinationDeviceQueue.add(wrappedTransfer);
-                    waitingTransfers.put(componentId, wrappedTransfer);
                     mutex.release();
                     wrappedTransfer.goToSleep();
                     // Jeżeli transfer jest budzony, to znaczy, że ktoś dodał go jako
                     // swojego następcę, więc teraz transfer musi zrobić to samo:
+                    System.out.println(componentId.toString() + ": zostałem obudzony");
+                    transfer.prepare();
                     try {
                         mutex.acquire();
                     } catch (InterruptedException e) {
                         throw new RuntimeException("panic: unexpected thread interruption");
                     }
-                    Queue<WrappedTransfer> sourceDeviceQueue = queues.get(sourceDeviceId);
-                    if (sourceDeviceQueue.peek() != null) {
-                        wrappedTransfer.setTransferToWakeUp(sourceDeviceQueue.poll());
-                        wrappedTransfer.wakeTheOtherUp();
+                    waitingTransfers.put(componentId, wrappedTransfer);
+                    if (sourceDeviceId != null) {
+                        Queue<WrappedTransfer> sourceDeviceQueue = queues.get(sourceDeviceId);
+                        if (sourceDeviceQueue.peek() != null) {
+                            wrappedTransfer.setTransferToWakeUp(sourceDeviceQueue.poll());
+                            wrappedTransfer.wakeTheOtherUp();
+                        }
                     }
                     // Oczekiwanie na przenoszenie:
                     mutex.release();
                     wrappedTransfer.goToSleep();
-                    // Budzenie po raz drugi - przenoszenie:
-                    // TODO: kawałki kodu na przenoszenie (poza ifem?)
                 }
 
-                // Przenoszenie:
+                // W tym miejscu transfer jest budzony po to, aby się ostatecznie wykonać:
                 try {
                     mutex.acquire();
                 } catch (InterruptedException e) {
                     throw new RuntimeException("panic: unexpected thread interruption");
                 }
 
-                // PERFORM
+                if (wrappedTransfer.getTransferToWakeUp() != null) {
+                    wrappedTransfer.wakeTheOtherUp();
+                }
+                waitingTransfers.remove(componentId);
 
+                if (sourceDeviceId != null) {
+                    Integer sourceFreeSlots = deviceFreeSlots.get(sourceDeviceId);
+                    deviceFreeSlots.put(sourceDeviceId, sourceFreeSlots + 1);
+                }
+                Integer destinationFreeSlots = deviceFreeSlots.get(destinationDeviceId);
+                deviceFreeSlots.put(destinationDeviceId, destinationFreeSlots - 1);
+                componentPlacement.put(componentId, destinationDeviceId);
+                currentTransfers.remove(componentId);
+                transfer.perform();
+
+                mutex.release();
             }
-
-
         }
-
     }
 
 
@@ -215,7 +242,7 @@ public class StorageSystemInstance implements StorageSystem {
 
     private boolean invalidComponent(ComponentId componentId, DeviceId sourceDeviceId) {
         for (ComponentId component : components) {
-            if (componentId.equals(component) && sourceDeviceId != componentPlacement.get(component)) {
+            if (componentId.equals(component) && !sourceDeviceId.equals(componentPlacement.get(component))) {
                 return true;
             }
         }
