@@ -40,5 +40,4 @@ public class Transfer implements ComponentTransfer {
     public void perform() {
 
     }
-
 }

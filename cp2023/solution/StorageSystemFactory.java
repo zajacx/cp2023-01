@@ -32,6 +32,10 @@ public final class StorageSystemFactory {
         List<DeviceId> devices = new ArrayList<>(deviceTotalSlots.keySet());
         List<ComponentId> components = new ArrayList<>(componentPlacement.keySet());
 
+        if (devices.isEmpty()) {
+            throw new IllegalArgumentException("No devices");
+        }
+
         Map<DeviceId, Integer> deviceFreeSlots = new ConcurrentHashMap<>();
 
         for (DeviceId device : devices) {
@@ -39,7 +43,7 @@ public final class StorageSystemFactory {
                 if (deviceTotalSlots.get(device) > 0) {
                     deviceFreeSlots.put(device, deviceTotalSlots.get(device));
                 } else {
-                    throw new IllegalArgumentException("Device with negative capacity");
+                    throw new IllegalArgumentException("Device with non-positive capacity");
                 }
             } else {
                 throw new IllegalArgumentException("Device with non-defined capacity");
@@ -59,11 +63,10 @@ public final class StorageSystemFactory {
         }
 
         return new StorageSystemInstance(
-                devices, // zobaczyć czy potrzebne
-                components, // zobaczyć czy potrzebne
-                deviceTotalSlots, // dane
-                deviceFreeSlots, // na pewno potrzebne
-                componentPlacement); // dane
+                devices,
+                components,
+                deviceFreeSlots,
+                componentPlacement);
     }
 
 }

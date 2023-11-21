@@ -13,24 +13,21 @@ import java.util.concurrent.Semaphore;
 public class StorageSystemInstance implements StorageSystem {
 
     // Collections created mainly to handle exceptions:
-    private final List<DeviceId> devices;
+    private final List<DeviceId> devices;       // też rozważyć, czy nie lepiej byłoby się odwoływać do map
     private final List<ComponentId> components;
+    private final Map<ComponentId, WrappedTransfer> currentTransfers = new ConcurrentHashMap<>();
 
     // System status data:
-    private final Map<DeviceId, Integer> deviceTotalSlots; // porządnie rozważyć sens tego XD
     private final Map<DeviceId, Integer> deviceFreeSlots;
     private final Map<ComponentId, DeviceId> componentPlacement;
 
     // Additional structures and variables:
 
-    // Map of components and their current transfers:
-    private final Map<ComponentId, WrappedTransfer> currentTransfers = new ConcurrentHashMap<>();
+    // If a transfer is ready to go, it is here:
+    private final Queue<WrappedTransfer> readyTransfers = new LinkedList<>();
 
-    // If a transfer is waiting, it's here:
-    private final Map<ComponentId, WrappedTransfer> waitingTransfers = new ConcurrentHashMap<>();
-
-    // Map of devices and their queues:
-    private final Map<DeviceId, Queue<WrappedTransfer>> queues = new ConcurrentHashMap<>();
+    // If a transfer is waiting for a place to be released, it is here:
+    private final Queue<WrappedTransfer> waitingTransfers = new LinkedList<>();
 
     // Mutex:
     private final Semaphore mutex = new Semaphore(1);
@@ -39,16 +36,12 @@ public class StorageSystemInstance implements StorageSystem {
     public StorageSystemInstance(
             List<DeviceId> devices,
             List<ComponentId> components,
-            Map<DeviceId, Integer> deviceTotalSlots,
             Map<DeviceId, Integer> deviceFreeSlots,
             Map<ComponentId, DeviceId> componentPlacement) {
         this.devices = devices;
         this.components = components;
-        this.deviceTotalSlots = deviceTotalSlots;
         this.deviceFreeSlots = deviceFreeSlots;
         this.componentPlacement = componentPlacement;
-        // Additional structures:
-        initializeQueues();
     }
 
     // ----------------------------- Public methods ------------------------------
@@ -74,13 +67,15 @@ public class StorageSystemInstance implements StorageSystem {
         // USUWANIE:
         if (destinationDeviceId == null) {
             transfer.prepare();
-            Queue<WrappedTransfer> sourceDeviceQueue = queues.get(sourceDeviceId);
-            if (sourceDeviceQueue.peek() != null) {
-                wrappedTransfer.setTransferToWakeUp(sourceDeviceQueue.poll());
-                System.out.println("Transfer " + componentId.toString() + " dodał " + wrappedTransfer.getTransferToWakeUp().getTransfer().getComponentId().toString() +
+            WrappedTransfer transferToWakeUp = popFromQueueOfThisDevice(sourceDeviceId);
+            if (transferToWakeUp != null) {
+                wrappedTransfer.setTransferToWakeUp(transferToWakeUp);
+                System.out.println("Transfer " + componentId.toString() + " dodał " +
+                        wrappedTransfer.getTransferToWakeUp().getTransfer().getComponentId().toString() +
                         " jako swojego następcę");
                 wrappedTransfer.wakeTheOtherUp();
-                System.out.println("Obudzono " + wrappedTransfer.getTransferToWakeUp().getTransfer().getComponentId().toString());
+                System.out.println("Obudzono " +
+                        wrappedTransfer.getTransferToWakeUp().getTransfer().getComponentId().toString());
             }
             Integer sourceFreeSlots = deviceFreeSlots.get(sourceDeviceId);
             deviceFreeSlots.put(sourceDeviceId, sourceFreeSlots + 1);
@@ -97,9 +92,9 @@ public class StorageSystemInstance implements StorageSystem {
                 // SĄ WOLNE MIEJSCA:
                 transfer.prepare();
                 if (sourceDeviceId != null) {
-                    Queue<WrappedTransfer> sourceDeviceQueue = queues.get(sourceDeviceId);
-                    if (sourceDeviceQueue.peek() != null) {
-                        wrappedTransfer.setTransferToWakeUp(sourceDeviceQueue.poll());
+                    WrappedTransfer transferToWakeUp = popFromQueueOfThisDevice(sourceDeviceId);
+                    if (transferToWakeUp != null) {
+                        wrappedTransfer.setTransferToWakeUp(transferToWakeUp);
                         wrappedTransfer.wakeTheOtherUp();
                     }
                     Integer sourceFreeSlots = deviceFreeSlots.get(sourceDeviceId);
@@ -119,7 +114,7 @@ public class StorageSystemInstance implements StorageSystem {
                 // Przechodzimy po wszystkich oczekujących transferach, bo być może
                 // ktoś wisi na swoim semaforze, a będzie za chwilę zwalniał miejsce:
                 boolean foundQuittingComponentImmediately = false;
-                for (WrappedTransfer wrapper : waitingTransfers.values()) {
+                for (WrappedTransfer wrapper : readyTransfers) {
                     if (wrapper.getTransfer().getSourceDeviceId() == destinationDeviceId &&
                             wrapper.getTransferToWakeUp() == null &&
                             !wrapper.equals(wrappedTransfer)) {
@@ -127,7 +122,7 @@ public class StorageSystemInstance implements StorageSystem {
                         foundQuittingComponentImmediately = true;
                         wrapper.setTransferToWakeUp(wrappedTransfer);
                         System.out.println("Znaleziono od razu miejsce dla " + componentId.toString() + " na urządzeniu "
-                                + destinationDeviceId.toString() + " w miejsce " + wrapper.getTransfer().getComponentId().toString());
+                                + destinationDeviceId + " w miejsce " + wrapper.getTransfer().getComponentId().toString());
                         break;
                     }
                 }
@@ -136,11 +131,11 @@ public class StorageSystemInstance implements StorageSystem {
                 // budzimy, bo transfer, za który wchodzimy, zaraz się wykona:
                 if (foundQuittingComponentImmediately) {
                     transfer.prepare();
-                    waitingTransfers.put(componentId, wrappedTransfer);
+                    readyTransfers.add(wrappedTransfer);
                     if (sourceDeviceId != null) {
-                        Queue<WrappedTransfer> sourceDeviceQueue = queues.get(sourceDeviceId);
-                        if (sourceDeviceQueue.peek() != null) {
-                            wrappedTransfer.setTransferToWakeUp(sourceDeviceQueue.poll());
+                        WrappedTransfer transferToWakeUp = popFromQueueOfThisDevice(sourceDeviceId);
+                        if (transferToWakeUp != null) {
+                            wrappedTransfer.setTransferToWakeUp(transferToWakeUp);
                             wrappedTransfer.wakeTheOtherUp();
                         }
                     }
@@ -148,32 +143,64 @@ public class StorageSystemInstance implements StorageSystem {
                     wrappedTransfer.goToSleep();
                 }
                 else {
-                    // Transfer dołącza do kolejki oczekująćych na dane urządzenie:
-                    Queue<WrappedTransfer> destinationDeviceQueue = queues.get(destinationDeviceId);
-                    System.out.println("Dodano " + componentId.toString() + " do kolejki na urządzeniu " + destinationDeviceId.toString());
-                    destinationDeviceQueue.add(wrappedTransfer);
-                    mutex.release();
-                    wrappedTransfer.goToSleep();
-                    // Jeżeli transfer jest budzony, to znaczy, że ktoś dodał go jako
-                    // swojego następcę, więc teraz transfer musi zrobić to samo:
-                    System.out.println(componentId.toString() + ": zostałem obudzony");
-                    transfer.prepare();
-                    try {
-                        mutex.acquire();
-                    } catch (InterruptedException e) {
-                        throw new RuntimeException("panic: unexpected thread interruption");
-                    }
-                    waitingTransfers.put(componentId, wrappedTransfer);
-                    if (sourceDeviceId != null) {
-                        Queue<WrappedTransfer> sourceDeviceQueue = queues.get(sourceDeviceId);
-                        if (sourceDeviceQueue.peek() != null) {
-                            wrappedTransfer.setTransferToWakeUp(sourceDeviceQueue.poll());
-                            wrappedTransfer.wakeTheOtherUp();
+                    // Transfer dołącza do kolejki oczekująćych:
+                    System.out.println("Dodano " + componentId.toString() + " do kolejki oczekujących na miejsce");
+                    waitingTransfers.add(wrappedTransfer);
+                    // Sprawdzamy, czy w waitingTransfer powstał cykl:
+                    WrappedTransfer cycleBeginning = cycleDetector(waitingTransfers);
+                    if (cycleBeginning != null) {
+                        // cycleBeginning to najdłużej czekający transfer w całym cyklu.
+                        // Budzimy go siłowo, a następnie on kaskadowo budzi pozostałych:
+                        cycleBeginning.getSemaphore().release();
+                        waitingTransfers.remove(cycleBeginning);
+                        // W międzyczasie nasz transfer idzie spać:
+                        mutex.release();
+                        wrappedTransfer.goToSleep();
+                        // Budzenie domykająćego:
+                        System.out.println(componentId + ": jestem domykającym w cyklu i zostałem obudzony");
+                        transfer.prepare();
+                        try {
+                            mutex.acquire();
+                        } catch (InterruptedException e) {
+                            throw new RuntimeException("panic: unexpected thread interruption");
                         }
+                        readyTransfers.add(wrappedTransfer);
+                        if (sourceDeviceId != null) {
+                            WrappedTransfer transferToWakeUp = popFromQueueOfThisDevice(sourceDeviceId);
+                            if (transferToWakeUp != null) {
+                                wrappedTransfer.setTransferToWakeUp(transferToWakeUp);
+                                wrappedTransfer.wakeTheOtherUp();
+                            }
+                        }
+                        // Oczekiwanie na przenoszenie:
+                        mutex.release();
+                        wrappedTransfer.goToSleep();
                     }
-                    // Oczekiwanie na przenoszenie:
-                    mutex.release();
-                    wrappedTransfer.goToSleep();
+                    else {
+                        // Nie powstał cykl, więc transfer zasypia:
+                        mutex.release();
+                        wrappedTransfer.goToSleep();
+                        // Jeżeli transfer jest budzony, to znaczy, że ktoś dodał go jako
+                        // swojego następcę, więc teraz transfer musi zrobić to samo:
+                        System.out.println(componentId + ": zostałem obudzony");
+                        transfer.prepare();
+                        try {
+                            mutex.acquire();
+                        } catch (InterruptedException e) {
+                            throw new RuntimeException("panic: unexpected thread interruption");
+                        }
+                        readyTransfers.add(wrappedTransfer);
+                        if (sourceDeviceId != null) {
+                            WrappedTransfer transferToWakeUp = popFromQueueOfThisDevice(sourceDeviceId);
+                            if (transferToWakeUp != null) {
+                                wrappedTransfer.setTransferToWakeUp(transferToWakeUp);
+                                wrappedTransfer.wakeTheOtherUp();
+                            }
+                        }
+                        // Oczekiwanie na przenoszenie:
+                        mutex.release();
+                        wrappedTransfer.goToSleep();
+                    }
                 }
 
                 // W tym miejscu transfer jest budzony po to, aby się ostatecznie wykonać:
@@ -186,7 +213,7 @@ public class StorageSystemInstance implements StorageSystem {
                 if (wrappedTransfer.getTransferToWakeUp() != null) {
                     wrappedTransfer.wakeTheOtherUp();
                 }
-                waitingTransfers.remove(componentId);
+                readyTransfers.remove(wrappedTransfer);
 
                 if (sourceDeviceId != null) {
                     Integer sourceFreeSlots = deviceFreeSlots.get(sourceDeviceId);
@@ -249,11 +276,55 @@ public class StorageSystemInstance implements StorageSystem {
         return false;
     }
 
-    private void initializeQueues() {
-        for (DeviceId device : devices) {
-            queues.put(device, new LinkedList<>());
+    private WrappedTransfer popFromQueueOfThisDevice(DeviceId deviceId) {
+        for (WrappedTransfer wrappedTransfer : waitingTransfers) {
+            if (wrappedTransfer.getTransfer().getDestinationDeviceId().equals(deviceId)) {
+                waitingTransfers.remove(wrappedTransfer);
+                return wrappedTransfer;
+            }
         }
+        return null;
     }
+
+    // Wykrywa cykl i zwraca najdłużej czekający transfer w tym cyklu.
+    private WrappedTransfer cycleDetector(Queue<WrappedTransfer> waitingTransfers) {
+        Set<WrappedTransfer> visited = new HashSet<>();
+        for (WrappedTransfer transfer : waitingTransfers) {
+            if (!visited.contains(transfer)) {
+                WrappedTransfer result = detectCycleDFS(transfer, visited);
+                if (result != null) {
+                    return result;
+                }
+            }
+        }
+        return null;
+    }
+
+    private WrappedTransfer detectCycleDFS(WrappedTransfer current, Set<WrappedTransfer> visited) {
+        if (current == null || visited.contains(current)) {
+            return null;    // brak cyklu lub już jest odwiedzony
+        }
+        visited.add(current);
+        DeviceId currentDestination = current.getTransfer().getDestinationDeviceId();
+        // Iterujemy przez wszystkie transfery:
+        for (WrappedTransfer next : waitingTransfers) {
+            if (next != current) {
+                DeviceId nextSourceDeviceId = next.getTransfer().getSourceDeviceId();
+                if (nextSourceDeviceId != null && nextSourceDeviceId.equals(currentDestination)) {
+                    if (visited.contains(next)) {
+                        return current; // znaleziono cykl
+                    } else {
+                        WrappedTransfer result = detectCycleDFS(next, visited);
+                        if (result != null) {
+                            return result;
+                        }
+                    }
+                }
+            }
+        }
+        return null; // brak cyklu
+    }
+
 
     // others...
 
