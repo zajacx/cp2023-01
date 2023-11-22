@@ -8,6 +8,7 @@ import cp2023.exceptions.*;
 
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Semaphore;
 
 public class StorageSystemInstance implements StorageSystem {
@@ -28,6 +29,10 @@ public class StorageSystemInstance implements StorageSystem {
 
     // If a transfer is waiting for a place to be released, it is here:
     private final Queue<WrappedTransfer> waitingTransfers = new LinkedList<>();
+
+    // Map of all cycles and their latches:
+    private final Map<ArrayList<WrappedTransfer>, CountDownLatch> cycles = new ConcurrentHashMap<>();
+    private final Semaphore cyclesSemaphore = new Semaphore(1);
 
     // Mutex:
     private final Semaphore mutex = new Semaphore(1);
@@ -146,24 +151,29 @@ public class StorageSystemInstance implements StorageSystem {
                     // Transfer dołącza do kolejki oczekująćych:
                     System.out.println("Dodano " + componentId.toString() + " do kolejki oczekujących na miejsce");
                     waitingTransfers.add(wrappedTransfer);
-                    // Sprawdzamy, czy w waitingTransfer powstał cykl:
-                    WrappedTransfer cycleBeginning = cycleDetector(waitingTransfers);
-                    if (cycleBeginning != null) {
-                        // cycleBeginning to najdłużej czekający transfer w całym cyklu.
-                        // Budzimy go siłowo, a następnie on kaskadowo budzi pozostałych:
-                        cycleBeginning.getSemaphore().release();
-                        waitingTransfers.remove(cycleBeginning);
-                        // W międzyczasie nasz transfer idzie spać:
-                        mutex.release();
-                        wrappedTransfer.goToSleep();
-                        // Budzenie domykająćego:
-                        System.out.println(componentId + ": jestem domykającym w cyklu i zostałem obudzony");
-                        transfer.prepare();
-                        try {
-                            mutex.acquire();
-                        } catch (InterruptedException e) {
-                            throw new RuntimeException("panic: unexpected thread interruption");
+                    // Sprawdzamy, czy w waitingTransfers powstał cykl:
+                    Set<DeviceId> visited = new HashSet<>();
+                    visited.add(wrappedTransfer.getTransfer().getDestinationDeviceId());
+                    ArrayList<WrappedTransfer> cycle = findCycle(
+                            wrappedTransfer.getTransfer().getSourceDeviceId(), visited);
+                    if (cycle != null) {
+                        // Powstaje cykl: w tablicy jedynym brakującym transferem jest ten, który domknął cykl:
+
+                        System.out.print("Powstał cykl: ");
+                        for (WrappedTransfer transfer1 : cycle) {
+                            System.out.print(transfer1.getTransfer().getSourceDeviceId().toString() + " -> " +
+                                    transfer1.getTransfer().getDestinationDeviceId().toString() + ", ");
                         }
+                        System.out.println("");
+
+                        // Budzenie wszystkich w cyklu:
+                        for (WrappedTransfer wrapper : cycle) {
+                            if (!wrapper.equals(wrappedTransfer)) {
+                                wrapper.getSemaphore().release();
+                            }
+                        }
+                        transfer.prepare();
+
                         readyTransfers.add(wrappedTransfer);
                         if (sourceDeviceId != null) {
                             WrappedTransfer transferToWakeUp = popFromQueueOfThisDevice(sourceDeviceId);
@@ -184,6 +194,29 @@ public class StorageSystemInstance implements StorageSystem {
                         // swojego następcę, więc teraz transfer musi zrobić to samo:
                         System.out.println(componentId + ": zostałem obudzony");
                         transfer.prepare();
+                        /*
+                        try {
+                            cyclesSemaphore.acquire();
+                        } catch (InterruptedException e) {
+                            throw new RuntimeException("panic: unexpected thread interruption");
+                        }
+
+                        // Generujemy zdarzenie na zasuwce:
+                        for (ArrayList<WrappedTransfer> c : cycles.keySet()) {
+                            if (c.contains(wrappedTransfer)) {
+                                CountDownLatch l = cycles.get(c);
+                                l.countDown();
+                                cyclesSemaphore.release();
+                                try {
+                                    l.await();
+                                } catch (InterruptedException e) {
+                                    throw new RuntimeException("panic: unexpected thread interruption");
+                                }
+                                break;
+                            }
+                        }
+
+                         */
                         try {
                             mutex.acquire();
                         } catch (InterruptedException e) {
@@ -286,45 +319,50 @@ public class StorageSystemInstance implements StorageSystem {
         return null;
     }
 
-    // Wykrywa cykl i zwraca najdłużej czekający transfer w tym cyklu.
-    private WrappedTransfer cycleDetector(Queue<WrappedTransfer> waitingTransfers) {
-        Set<WrappedTransfer> visited = new HashSet<>();
-        for (WrappedTransfer transfer : waitingTransfers) {
-            if (!visited.contains(transfer)) {
-                WrappedTransfer result = detectCycleDFS(transfer, visited);
-                if (result != null) {
-                    return result;
+    private ArrayList<WrappedTransfer> findCycle(DeviceId current, Set<DeviceId> visited) {
+        if (current == null) {
+            return null;
+        }
+        visited.add(current);
+        ArrayList<WrappedTransfer> cycle = new ArrayList<>();
+        if (checkIfSomeoneIsWaitingFor(current)) {
+            Queue<WrappedTransfer> transfers = makeListOfTransfersTo(current);
+            for (WrappedTransfer wrappedTransfer : transfers) {
+                if (visited.contains(wrappedTransfer.getTransfer().getSourceDeviceId())) {
+                    cycle.add(wrappedTransfer);
+                    return cycle;
+                } else {
+                    ArrayList<WrappedTransfer> subcycle = findCycle(
+                            wrappedTransfer.getTransfer().getSourceDeviceId(), visited);
+                    if (subcycle != null) {
+                        cycle.add(wrappedTransfer);
+                        cycle.addAll(subcycle);
+                        return cycle;
+                    }
                 }
             }
         }
         return null;
     }
 
-    private WrappedTransfer detectCycleDFS(WrappedTransfer current, Set<WrappedTransfer> visited) {
-        if (current == null || visited.contains(current)) {
-            return null;    // brak cyklu lub już jest odwiedzony
-        }
-        visited.add(current);
-        DeviceId currentDestination = current.getTransfer().getDestinationDeviceId();
-        // Iterujemy przez wszystkie transfery:
-        for (WrappedTransfer next : waitingTransfers) {
-            if (next != current) {
-                DeviceId nextSourceDeviceId = next.getTransfer().getSourceDeviceId();
-                if (nextSourceDeviceId != null && nextSourceDeviceId.equals(currentDestination)) {
-                    if (visited.contains(next)) {
-                        return current; // znaleziono cykl
-                    } else {
-                        WrappedTransfer result = detectCycleDFS(next, visited);
-                        if (result != null) {
-                            return result;
-                        }
-                    }
-                }
+    private boolean checkIfSomeoneIsWaitingFor(DeviceId deviceId) {
+        for (WrappedTransfer wrappedTransfer : waitingTransfers) {
+            if (wrappedTransfer.getTransfer().getDestinationDeviceId().equals(deviceId)) {
+                return true;
             }
         }
-        return null; // brak cyklu
+        return false;
     }
 
+    private Queue<WrappedTransfer> makeListOfTransfersTo(DeviceId deviceId) {
+        Queue<WrappedTransfer> result = new LinkedList<>();
+        for (WrappedTransfer wrappedTransfer : waitingTransfers) {
+            if (wrappedTransfer.getTransfer().getDestinationDeviceId().equals(deviceId)) {
+                result.add(wrappedTransfer);
+            }
+        }
+        return result;
+    }
 
     // others...
 

@@ -4,9 +4,6 @@ import cp2023.base.ComponentId;
 import cp2023.base.ComponentTransfer;
 import cp2023.base.DeviceId;
 
-import java.util.Map;
-import java.util.Queue;
-
 public class Transfer implements ComponentTransfer {
     private final ComponentId componentId;
     private final DeviceId sourceDeviceId;

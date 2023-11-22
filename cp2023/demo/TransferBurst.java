@@ -45,7 +45,7 @@ public final class TransferBurst {
         HashMap<DeviceId, Integer> deviceCapacities = new HashMap<>(3);
         deviceCapacities.put(dev1, 3);
         deviceCapacities.put(dev2, 3);
-        deviceCapacities.put(dev3, 5);
+        deviceCapacities.put(dev3, 3);
         
         HashMap<ComponentId, DeviceId> initialComponentMapping = new HashMap<>(9);
 
@@ -63,7 +63,7 @@ public final class TransferBurst {
         
         return StorageSystemFactory.newSystem(deviceCapacities, initialComponentMapping);
     }
-    
+
     private final static Collection<Thread> setupTransferers(StorageSystem system) {
         // FIXME: debug
         ArrayList<Thread> transferer = new ArrayList<>();
@@ -106,6 +106,57 @@ public final class TransferBurst {
         }));
         return transferer;
     }
+    /*
+    private final static Collection<Thread> setupTransferers(StorageSystem system) {
+        // FIXME: debug
+        ArrayList<Thread> transferer = new ArrayList<>();
+        transferer.add(new Thread(new Runnable() {
+            @Override
+            public void run() {
+                sleep(10);
+                System.out.println("Transferer " + Thread.currentThread().getId() + " has started.");
+                executeTransfer(system, 101, 1, 2, 20);
+
+                sleep(30);
+                executeTransfer(system, 105, 2, 0, 10);
+
+                System.out.println("Transferer " + Thread.currentThread().getId() + " has finished.");
+            }
+        }));
+        transferer.add(new Thread(new Runnable() {
+            @Override
+            public void run() {
+                System.out.println("Transferer " + Thread.currentThread().getId() + " has started.");
+                executeTransfer(system, 104, 2, 3, 10);
+                System.out.println("Transferer " + Thread.currentThread().getId() + " has finished.");
+            }
+        }));
+        transferer.add(new Thread(new Runnable() {
+            @Override
+            public void run() {
+                System.out.println("Transferer " + Thread.currentThread().getId() + " has started.");
+                executeTransfer(system, 109, 3, 1, 10);
+
+                sleep(30);
+                executeTransfer(system, 102, 1, 0, 10);
+
+                System.out.println("Transferer " + Thread.currentThread().getId() + " has finished.");
+            }
+        }));
+        /*
+        transferer.add(new Thread(new Runnable() {
+            @Override
+            public void run() {
+                System.out.println("Transferer " + Thread.currentThread().getId() + " has started.");
+                executeTransfer(system, 107, 3, 1, 10);
+                System.out.println("Transferer " + Thread.currentThread().getId() + " has finished.");
+            }
+        }));
+
+        return transferer;
+    }
+    */
+
     
     private final static void runTransferers(Collection<Thread> users) {
         for (Thread t : users) {
