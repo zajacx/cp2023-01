@@ -1,3 +1,7 @@
+/*
+ * Author: Tomasz Zając (tz448580@students.mimuw.edu.pl)
+ */
+
 package cp2023.solution;
 
 import cp2023.base.ComponentTransfer;

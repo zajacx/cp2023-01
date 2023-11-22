@@ -1,3 +1,7 @@
+/*
+ * Author: Tomasz Zając (tz448580@students.mimuw.edu.pl)
+ */
+
 package cp2023.solution;
 
 import cp2023.base.ComponentId;
@@ -7,14 +11,12 @@ import cp2023.base.StorageSystem;
 import cp2023.exceptions.*;
 
 import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Semaphore;
 
 public class StorageSystemInstance implements StorageSystem {
 
-    // Collections created mainly to handle exceptions:
-    private final Map<ComponentId, WrappedTransfer> currentTransfers = new ConcurrentHashMap<>();
+    // Collection created mainly to handle exceptions:
+    private final List<ComponentId> occupied = new LinkedList<>();
 
     // System status data:
     private final Map<DeviceId, Integer> deviceFreeSlots;
@@ -55,11 +57,9 @@ public class StorageSystemInstance implements StorageSystem {
 
         handleExceptions(transfer);
         WrappedTransfer wrappedTransfer = new WrappedTransfer(transfer);
-        currentTransfers.put(componentId, wrappedTransfer);
+        occupied.add(componentId);
 
-        // TRANSFER:
-
-        // USUWANIE:
+        // Delete component:
         if (destinationDeviceId == null) {
             transfer.prepare();
             WrappedTransfer transferToWakeUp = popFromQueueOfThisDevice(sourceDeviceId);
@@ -70,16 +70,16 @@ public class StorageSystemInstance implements StorageSystem {
             Integer sourceFreeSlots = deviceFreeSlots.get(sourceDeviceId);
             deviceFreeSlots.put(sourceDeviceId, sourceFreeSlots + 1);
             componentPlacement.remove(componentId);
-            currentTransfers.remove(componentId);
+            occupied.remove(componentId);
             if (wrappedTransfer.getTransferToWakeUp() != null) {
                 wrappedTransfer.wakeTheOtherUp();
             }
             transfer.perform();
             mutex.release();
         } else {
-            // DODAWANIE LUB PRZENOSZENIE:
+            // Add or move component:
             if (deviceFreeSlots.get(destinationDeviceId) > 0) {
-                // SĄ WOLNE MIEJSCA:
+                // There are empty places on a destination device:
                 transfer.prepare();
                 if (sourceDeviceId != null) {
                     WrappedTransfer transferToWakeUp = popFromQueueOfThisDevice(sourceDeviceId);
@@ -93,30 +93,29 @@ public class StorageSystemInstance implements StorageSystem {
                 Integer destinationFreeSlots = deviceFreeSlots.get(destinationDeviceId);
                 deviceFreeSlots.put(destinationDeviceId, destinationFreeSlots - 1);
                 componentPlacement.put(componentId, destinationDeviceId);
-                currentTransfers.remove(componentId);
+                occupied.remove(componentId);
                 if (wrappedTransfer.getTransferToWakeUp() != null) {
                     wrappedTransfer.wakeTheOtherUp();
                 }
                 transfer.perform();
                 mutex.release();
             } else {
-                // NIE MA WOLNYCH MIEJSC:
-                // Przechodzimy po wszystkich oczekujących transferach, bo być może
-                // ktoś wisi na swoim semaforze, a będzie za chwilę zwalniał miejsce:
+                // There is no empty place on a destination device:
+                // Looping over all transfers that are waiting on their semaphores
+                // to look for an optional empty place:
                 boolean foundQuittingComponentImmediately = false;
                 for (WrappedTransfer wrapper : readyTransfers) {
                     if (wrapper.getTransfer().getSourceDeviceId() == destinationDeviceId &&
                             wrapper.getTransferToWakeUp() == null &&
                             !wrapper.equals(wrappedTransfer)) {
-                        // Znaleźliśmy wychodzący transfer, który jeszcze nie ma następcy:
+                        // Found quitting transfer without any transfer to replace it:
                         foundQuittingComponentImmediately = true;
                         wrapper.setTransferToWakeUp(wrappedTransfer);
                         break;
                     }
                 }
-                // Jeśli "siłowo" znaleźliśmy miejsce dla transferu (przez przeszukiwanie)
-                // od razu szukamy dla niego następcy w kolejce urządzenia i tego następcę
-                // budzimy, bo transfer, za który wchodzimy, zaraz się wykona:
+                // After forcefully finding a place for a transfer it has to check
+                // if any other transfer is waiting for a place on its device:
                 if (foundQuittingComponentImmediately) {
                     transfer.prepare();
                     readyTransfers.add(wrappedTransfer);
@@ -130,18 +129,19 @@ public class StorageSystemInstance implements StorageSystem {
                     mutex.release();
                     wrappedTransfer.goToSleep();
                 }
-                // Jeśli nie ma miejsc, transfer dołącza do kolejki oczekująćych:
+                // No empty places - transfer is added to the queue of all waiting transfers
                 else {
                     waitingTransfers.add(wrappedTransfer);
-                    // Sprawdzamy, czy w waitingTransfers powstał cykl:
+                    // Checking for cycle:
                     Set<DeviceId> visited = new HashSet<>();
                     visited.add(wrappedTransfer.getTransfer().getDestinationDeviceId());
-                    ArrayList<WrappedTransfer> cycle = findCycle(
+                    ArrayList<WrappedTransfer> cycle = cycleDetector(
                             wrappedTransfer.getTransfer().getSourceDeviceId(), visited);
                     if (cycle != null) {
                         transfer.prepare();
-                        // Powstaje cykl: w tablicy jedynym brakującym transferem jest ten, który domknął cykl:
-                        // Budzenie wszystkich w cyklu:
+                        // There is a cycle; the only transfer that is not in the cycle array
+                        // is the one that has closed the cycle, so there is no need to wake it up.
+                        // Waking up every other transfer from the cycle:
                         for (WrappedTransfer wrapper : cycle) {
                             if (!wrapper.equals(wrappedTransfer)) {
                                 wrapper.getSemaphore().release();
@@ -155,16 +155,17 @@ public class StorageSystemInstance implements StorageSystem {
                                 wrappedTransfer.wakeTheOtherUp();
                             }
                         }
-                        // Oczekiwanie na przenoszenie:
+                        // Waiting to be moved:
                         mutex.release();
                         wrappedTransfer.goToSleep();
                     }
                     else {
-                        // Nie powstał cykl, więc transfer zasypia:
+                        // There is no cycle, so the transfer goes to sleep:
                         mutex.release();
                         wrappedTransfer.goToSleep();
-                        // Jeżeli transfer jest budzony, to znaczy, że ktoś dodał go jako
-                        // swojego następcę, więc teraz transfer musi zrobić to samo:
+                        // If the transfer is waked up, it means that some other transfer
+                        // has added it as a transfer to wake up, which means our transfer
+                        // has to do the same with another from the queue:
                         transfer.prepare();
                         try {
                             mutex.acquire();
@@ -179,13 +180,13 @@ public class StorageSystemInstance implements StorageSystem {
                                 wrappedTransfer.wakeTheOtherUp();
                             }
                         }
-                        // Oczekiwanie na przenoszenie:
+                        // Waiting to be moved:
                         mutex.release();
                         wrappedTransfer.goToSleep();
                     }
                 }
 
-                // W tym miejscu transfer jest budzony po to, aby się ostatecznie wykonać:
+                // Here transfer is being waked up for the last time:
                 try {
                     mutex.acquire();
                 } catch (InterruptedException e) {
@@ -204,7 +205,7 @@ public class StorageSystemInstance implements StorageSystem {
                 Integer destinationFreeSlots = deviceFreeSlots.get(destinationDeviceId);
                 deviceFreeSlots.put(destinationDeviceId, destinationFreeSlots - 1);
                 componentPlacement.put(componentId, destinationDeviceId);
-                currentTransfers.remove(componentId);
+                occupied.remove(componentId);
                 transfer.perform();
 
                 mutex.release();
@@ -220,7 +221,7 @@ public class StorageSystemInstance implements StorageSystem {
         DeviceId sourceDeviceId = transfer.getSourceDeviceId();
         DeviceId destinationDeviceId = transfer.getDestinationDeviceId();
         // Real-time exception:
-        if (currentTransfers.get(componentId) != null) {
+        if (occupied.contains(componentId)) {
             throw new ComponentIsBeingOperatedOn(componentId);
         }
         // Parameters-connected exceptions:
@@ -271,7 +272,7 @@ public class StorageSystemInstance implements StorageSystem {
         return null;
     }
 
-    private ArrayList<WrappedTransfer> findCycle(DeviceId current, Set<DeviceId> visited) {
+    private ArrayList<WrappedTransfer> cycleDetector(DeviceId current, Set<DeviceId> visited) {
         if (current == null) {
             return null;
         }
@@ -284,7 +285,7 @@ public class StorageSystemInstance implements StorageSystem {
                     cycle.add(wrappedTransfer);
                     return cycle;
                 } else {
-                    ArrayList<WrappedTransfer> subcycle = findCycle(
+                    ArrayList<WrappedTransfer> subcycle = cycleDetector(
                             wrappedTransfer.getTransfer().getSourceDeviceId(), visited);
                     if (subcycle != null) {
                         cycle.add(wrappedTransfer);
@@ -315,8 +316,5 @@ public class StorageSystemInstance implements StorageSystem {
         }
         return result;
     }
-
-    // others...
-
 
 }

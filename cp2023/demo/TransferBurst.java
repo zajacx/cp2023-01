@@ -46,7 +46,6 @@ public final class TransferBurst {
         deviceCapacities.put(dev1, 3);
         deviceCapacities.put(dev2, 3);
         deviceCapacities.put(dev3, 5);
-        
         HashMap<ComponentId, DeviceId> initialComponentMapping = new HashMap<>(9);
 
         initialComponentMapping.put(comp1, dev1);
@@ -82,7 +81,7 @@ public final class TransferBurst {
             @Override
             public void run() {
                 System.out.println("Transferer " + Thread.currentThread().getId() + " has started.");
-                executeTransfer(system, 110, 0, 1, 10);
+                executeTransfer(system, 104, 2, 1, 10);
                 System.out.println("Transferer " + Thread.currentThread().getId() + " has finished.");
             }
         }));

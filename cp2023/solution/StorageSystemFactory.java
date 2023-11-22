@@ -4,6 +4,8 @@
  * Java Assignment
  *
  * Author: Konrad Iwanicki (iwanicki@mimuw.edu.pl)
+ *
+ * Solution: Tomasz Zając (tz448580@students.mimuw.edu.pl)
  */
 package cp2023.solution;
 
@@ -51,7 +53,13 @@ public final class StorageSystemFactory {
         }
 
         for (ComponentId component : components) {
+            if (component == null) {
+                throw new IllegalArgumentException("Null component");
+            }
             DeviceId deviceId = componentPlacement.get(component);
+            if (deviceId == null || !devices.contains(deviceId)) {
+                throw new IllegalArgumentException("No device with this id in devices");
+            }
             Integer freeSlots = deviceFreeSlots.get(deviceId);
             deviceFreeSlots.put(deviceId, freeSlots - 1);
         }
