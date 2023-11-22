@@ -14,8 +14,6 @@ import java.util.concurrent.Semaphore;
 public class StorageSystemInstance implements StorageSystem {
 
     // Collections created mainly to handle exceptions:
-    private final List<DeviceId> devices;       // też rozważyć, czy nie lepiej byłoby się odwoływać do map
-    private final List<ComponentId> components;
     private final Map<ComponentId, WrappedTransfer> currentTransfers = new ConcurrentHashMap<>();
 
     // System status data:
@@ -30,26 +28,18 @@ public class StorageSystemInstance implements StorageSystem {
     // If a transfer is waiting for a place to be released, it is here:
     private final Queue<WrappedTransfer> waitingTransfers = new LinkedList<>();
 
-    // Map of all cycles and their latches:
-    private final Map<ArrayList<WrappedTransfer>, CountDownLatch> cycles = new ConcurrentHashMap<>();
-    private final Semaphore cyclesSemaphore = new Semaphore(1);
-
     // Mutex:
     private final Semaphore mutex = new Semaphore(1);
 
 
     public StorageSystemInstance(
-            List<DeviceId> devices,
-            List<ComponentId> components,
             Map<DeviceId, Integer> deviceFreeSlots,
             Map<ComponentId, DeviceId> componentPlacement) {
-        this.devices = devices;
-        this.components = components;
         this.deviceFreeSlots = deviceFreeSlots;
         this.componentPlacement = componentPlacement;
     }
 
-    // ----------------------------- Public methods ------------------------------
+    // ----------------------------- Public method ------------------------------
 
     public void execute(ComponentTransfer transfer) throws TransferException {
 
@@ -75,12 +65,7 @@ public class StorageSystemInstance implements StorageSystem {
             WrappedTransfer transferToWakeUp = popFromQueueOfThisDevice(sourceDeviceId);
             if (transferToWakeUp != null) {
                 wrappedTransfer.setTransferToWakeUp(transferToWakeUp);
-                System.out.println("Transfer " + componentId.toString() + " dodał " +
-                        wrappedTransfer.getTransferToWakeUp().getTransfer().getComponentId().toString() +
-                        " jako swojego następcę");
                 wrappedTransfer.wakeTheOtherUp();
-                System.out.println("Obudzono " +
-                        wrappedTransfer.getTransferToWakeUp().getTransfer().getComponentId().toString());
             }
             Integer sourceFreeSlots = deviceFreeSlots.get(sourceDeviceId);
             deviceFreeSlots.put(sourceDeviceId, sourceFreeSlots + 1);
@@ -126,8 +111,6 @@ public class StorageSystemInstance implements StorageSystem {
                         // Znaleźliśmy wychodzący transfer, który jeszcze nie ma następcy:
                         foundQuittingComponentImmediately = true;
                         wrapper.setTransferToWakeUp(wrappedTransfer);
-                        System.out.println("Znaleziono od razu miejsce dla " + componentId.toString() + " na urządzeniu "
-                                + destinationDeviceId + " w miejsce " + wrapper.getTransfer().getComponentId().toString());
                         break;
                     }
                 }
@@ -147,9 +130,8 @@ public class StorageSystemInstance implements StorageSystem {
                     mutex.release();
                     wrappedTransfer.goToSleep();
                 }
+                // Jeśli nie ma miejsc, transfer dołącza do kolejki oczekująćych:
                 else {
-                    // Transfer dołącza do kolejki oczekująćych:
-                    System.out.println("Dodano " + componentId.toString() + " do kolejki oczekujących na miejsce");
                     waitingTransfers.add(wrappedTransfer);
                     // Sprawdzamy, czy w waitingTransfers powstał cykl:
                     Set<DeviceId> visited = new HashSet<>();
@@ -157,23 +139,14 @@ public class StorageSystemInstance implements StorageSystem {
                     ArrayList<WrappedTransfer> cycle = findCycle(
                             wrappedTransfer.getTransfer().getSourceDeviceId(), visited);
                     if (cycle != null) {
+                        transfer.prepare();
                         // Powstaje cykl: w tablicy jedynym brakującym transferem jest ten, który domknął cykl:
-
-                        System.out.print("Powstał cykl: ");
-                        for (WrappedTransfer transfer1 : cycle) {
-                            System.out.print(transfer1.getTransfer().getSourceDeviceId().toString() + " -> " +
-                                    transfer1.getTransfer().getDestinationDeviceId().toString() + ", ");
-                        }
-                        System.out.println("");
-
                         // Budzenie wszystkich w cyklu:
                         for (WrappedTransfer wrapper : cycle) {
                             if (!wrapper.equals(wrappedTransfer)) {
                                 wrapper.getSemaphore().release();
                             }
                         }
-                        transfer.prepare();
-
                         readyTransfers.add(wrappedTransfer);
                         if (sourceDeviceId != null) {
                             WrappedTransfer transferToWakeUp = popFromQueueOfThisDevice(sourceDeviceId);
@@ -192,31 +165,7 @@ public class StorageSystemInstance implements StorageSystem {
                         wrappedTransfer.goToSleep();
                         // Jeżeli transfer jest budzony, to znaczy, że ktoś dodał go jako
                         // swojego następcę, więc teraz transfer musi zrobić to samo:
-                        System.out.println(componentId + ": zostałem obudzony");
                         transfer.prepare();
-                        /*
-                        try {
-                            cyclesSemaphore.acquire();
-                        } catch (InterruptedException e) {
-                            throw new RuntimeException("panic: unexpected thread interruption");
-                        }
-
-                        // Generujemy zdarzenie na zasuwce:
-                        for (ArrayList<WrappedTransfer> c : cycles.keySet()) {
-                            if (c.contains(wrappedTransfer)) {
-                                CountDownLatch l = cycles.get(c);
-                                l.countDown();
-                                cyclesSemaphore.release();
-                                try {
-                                    l.await();
-                                } catch (InterruptedException e) {
-                                    throw new RuntimeException("panic: unexpected thread interruption");
-                                }
-                                break;
-                            }
-                        }
-
-                         */
                         try {
                             mutex.acquire();
                         } catch (InterruptedException e) {
@@ -278,10 +227,10 @@ public class StorageSystemInstance implements StorageSystem {
         if (sourceDeviceId == null && destinationDeviceId == null) {
             throw new IllegalTransferType(componentId);
         }
-        if (sourceDeviceId != null && !devices.contains(sourceDeviceId)) {
+        if (sourceDeviceId != null && !deviceFreeSlots.containsKey(sourceDeviceId)) {
             throw new DeviceDoesNotExist(sourceDeviceId);
         }
-        if (destinationDeviceId != null && !devices.contains(destinationDeviceId)) {
+        if (destinationDeviceId != null && !deviceFreeSlots.containsKey(destinationDeviceId)) {
             throw new DeviceDoesNotExist(destinationDeviceId);
         }
         if (sourceDeviceId != null && sourceDeviceId.equals(destinationDeviceId)) {
@@ -292,7 +241,7 @@ public class StorageSystemInstance implements StorageSystem {
         }
         if (sourceDeviceId == null) {
             // (destinationDeviceId != null) is always true here
-            for (ComponentId component : components) {
+            for (ComponentId component : componentPlacement.keySet()) {
                 if (componentId.equals(component)) {
                     throw new ComponentAlreadyExists(component, componentPlacement.get(component));
                 }
@@ -301,7 +250,10 @@ public class StorageSystemInstance implements StorageSystem {
     }
 
     private boolean invalidComponent(ComponentId componentId, DeviceId sourceDeviceId) {
-        for (ComponentId component : components) {
+        for (ComponentId component : componentPlacement.keySet()) {
+            if (!componentPlacement.containsKey(componentId)) {
+                return true;
+            }
             if (componentId.equals(component) && !sourceDeviceId.equals(componentPlacement.get(component))) {
                 return true;
             }

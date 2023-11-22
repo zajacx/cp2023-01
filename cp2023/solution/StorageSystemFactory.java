@@ -39,7 +39,7 @@ public final class StorageSystemFactory {
         Map<DeviceId, Integer> deviceFreeSlots = new ConcurrentHashMap<>();
 
         for (DeviceId device : devices) {
-            if (deviceTotalSlots.get(device) != null) {
+            if (device != null && deviceTotalSlots.get(device) != null) {
                 if (deviceTotalSlots.get(device) > 0) {
                     deviceFreeSlots.put(device, deviceTotalSlots.get(device));
                 } else {
@@ -62,11 +62,7 @@ public final class StorageSystemFactory {
             }
         }
 
-        return new StorageSystemInstance(
-                devices,
-                components,
-                deviceFreeSlots,
-                componentPlacement);
+        return new StorageSystemInstance(deviceFreeSlots, componentPlacement);
     }
 
 }
